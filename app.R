@@ -26,7 +26,8 @@ suppressPackageStartupMessages({
 APP_VERSION <- "v1.0"
 APP_YEAR <- "2026"
 PAGE_MARGIN <- 0.5     # page margins in inches (all four sides, both layouts)
-CONT_HEADINGS <- TRUE   # add "SECTION (CONT.)" headings when a section continues in a new column or page
+CONT_HEADINGS <- TRUE
+JUSTIFY_TEXT <- TRUE    # justify body text (straight left and right edges), like a typeset CV   # add "SECTION (CONT.)" headings when a section continues in a new column or page
 
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || (length(a) == 1 && is.na(a))) b else a
 val <- function(e, k) {
@@ -59,6 +60,16 @@ SECTIONS <- list(
       fld("location", "City, State", placeholder = "DeKalb, IL"),
       DATES,
       BULLETS("GPA: 3.8/4.0\nHonors Thesis: Social buffering in prairie voles (Advisor: Dr. R. J. Ortiz)"))),
+  appointments = list(
+    title = "Employment", kind = "employ", stages = c("fac"), add_label = "Add position",
+    tip = "Academic and professional positions: faculty roles, postdocs, research technician or lab manager jobs, consulting. Give the dates and a short paragraph (1-3 sentences) describing the work. Part-time jobs outside research fit better under Work Experience.",
+    fields = list(
+      fld("title", "Position", placeholder = "Postdoctoral Research Associate", required = TRUE),
+      fld("org", "Institution", placeholder = "New Mexico State University", required = TRUE),
+      fld("location", "Department or lab (optional)", placeholder = "Department of Chemistry and Biochemistry"),
+      DATES,
+      fld("description", "Description (a short paragraph)", "textarea",
+          placeholder = "Research associate in the Baker lab. Specialized in 3D-printed brain-on-a-chip microfluidic devices using ex vivo calcium imaging."))),
   research = list(
     title = "Research Experience", kind = "dated", stages = c("ug", "grad", "fac"),
     tip = "This is the heart of a research CV. Name the lab and the PI, then write 2-4 bullets about what YOU did: techniques, software, how many animals or samples. \"Performed c-Fos immunohistochemistry on 120 brain sections\" is much stronger than \"Helped in the lab.\"",
@@ -186,7 +197,7 @@ SECTIONS <- list(
       fld("phone", "Phone (optional)")))
 )
 SEC_CHOICES <- setNames(names(SECTIONS), vapply(SECTIONS, `[[`, "", "title"))
-SORTED_KINDS <- c("dated", "award", "grant", "pub", "pres", "cert")
+SORTED_KINDS <- c("dated", "employ", "award", "grant", "pub", "pres", "cert")
 
 # Student-made ("custom") sections. Each one is stored as list(id, title, kind),
 # where kind is "dated" (title, place, dates, bullets) or "list" (one line per item).
@@ -231,7 +242,8 @@ FONTS <- list(
   "Times New Roman (classic)" = list(docx = "Times New Roman", css = "'Times New Roman', Tinos, 'Liberation Serif', Times, serif"),
   "Garamond (elegant)"        = list(docx = "Garamond",        css = "Garamond, 'EB Garamond', 'Times New Roman', serif"),
   "Arial (clean)"             = list(docx = "Arial",           css = "Arial, 'Liberation Sans', Helvetica, sans-serif"))
-ACCENTS <- c("Black" = "#111111", "Navy" = "#1F3A5F", "Cardinal red" = "#A6192E", "Forest green" = "#2E5E3A")
+ACCENTS <- c("Black" = "#111111", "Navy" = "#1F3A5F", "Royal purple" = "#2A0B9E", "Cardinal red" = "#A6192E",
+             "Forest green" = "#2E5E3A")
 
 # ---------------------------------------------------------------------
 # 2. Formatting helpers (dates, names, APA)
@@ -317,7 +329,8 @@ crossref_fields <- function(res) {
 # ---------------------------------------------------------------------
 render_entry <- function(e, sec, last, defs = SECTIONS) {
   kind <- defs[[sec]]$kind
-  out <- list(lines = list(), right = "", bullets = character())
+  # `just` marks which lines are paragraph-style text that gets justified
+  out <- list(lines = list(), right = "", bullets = character(), just = logical())
   switch(kind,
     dated = {
       out$lines[[1]] <- list(R(val(e, "title"), b = TRUE))
@@ -356,10 +369,10 @@ render_entry <- function(e, sec, last, defs = SECTIONS) {
           if (nzchar(val(e, "pages"))) runs <- c(runs, list(R(paste0(", ", gsub("-", "–", val(e, "pages"))))))
           runs <- c(runs, list(R(". ")))
         }
-        d <- clean_doi(val(e, "doi"))
-        if (nzchar(d)) runs <- c(runs, list(R(paste0("https://doi.org/", d))))
       }
-      out$lines[[1]] <- runs
+      out$lines[[1]] <- runs; out$just <- TRUE
+      d <- clean_doi(val(e, "doi"))   # DOI on its own line, so the citation above it isn't stretched
+      if (!st %in% c("Submitted", "In preparation") && nzchar(d)) out$lines[[2]] <- list(R(paste0("https://doi.org/", d)))
     },
     pres = {
       yr <- val(e, "year"); mo <- val(e, "month")
@@ -371,7 +384,15 @@ render_entry <- function(e, sec, last, defs = SECTIONS) {
                               val(e, "event"),
                               if (nzchar(val(e, "location"))) paste0(", ", val(e, "location")) else "", "."))))
       if (nzchar(val(e, "award"))) runs <- c(runs, list(R(paste0(" (", val(e, "award"), ")"), b = TRUE)))
-      out$lines[[1]] <- runs
+      out$lines[[1]] <- runs; out$just <- TRUE
+    },
+    employ = {
+      out$lines[[1]] <- list(R(val(e, "title"), b = TRUE))
+      d <- trimws(gsub("\\s*\n\\s*", " ", val(e, "description")))
+      if (nzchar(d)) { out$lines[[2]] <- list(R(d, i = TRUE)); out$just <- c(FALSE, TRUE) }
+      inst <- paste(c(val(e, "location"), val(e, "org"))[nzchar(c(val(e, "location"), val(e, "org")))], collapse = ", ")
+      if (nzchar(inst)) out$lines[[length(out$lines) + 1]] <- list(R(inst))
+      out$right <- date_label(e, sec)
     },
     cert = {
       out$lines[[1]] <- list(R(val(e, "title"), b = TRUE))
@@ -390,7 +411,7 @@ render_entry <- function(e, sec, last, defs = SECTIONS) {
       out$right <- val(e, "year")
     },
     skill = {
-      out$lines[[1]] <- list(R(paste0(val(e, "title"), ": "), b = TRUE), R(val(e, "items")))
+      out$lines[[1]] <- list(R(paste0(val(e, "title"), ": "), b = TRUE), R(val(e, "items"))); out$just <- TRUE
     },
     reference = {
       out$lines[[1]] <- list(R(val(e, "title"), b = TRUE))
@@ -398,6 +419,7 @@ render_entry <- function(e, sec, last, defs = SECTIONS) {
       ct <- c(val(e, "email"), val(e, "phone")); ct <- ct[nzchar(ct)]
       if (length(ct)) out$lines[[length(out$lines) + 1]] <- list(R(paste(ct, collapse = "  |  ")))
     })
+  out$just <- c(out$just, rep(FALSE, length(out$lines)))[seq_along(out$lines)]
   out
 }
 
@@ -406,7 +428,7 @@ sort_entries <- function(ents, sec, defs = SECTIONS) {
   kind <- defs[[sec]]$kind
   if (!kind %in% SORTED_KINDS) return(ents)
   num <- function(x) ifelse(is.na(x), -1e5, x)
-  if (kind == "dated") {
+  if (kind %in% c("dated", "employ")) {
     endk <- vapply(ents, function(e) if (is_current(e)) 1e4 else num(date_num(val(e, "end_month"), val(e, "end_year"))), 0)
     stk <- vapply(ents, function(e) num(date_num(val(e, "start_month"), val(e, "start_year"))), 0)
     endk <- ifelse(endk == -1e5, stk, endk)
@@ -471,23 +493,29 @@ cv_css <- function(style) {
   letter-spacing:.05em;font-size:11pt;margin:12pt 0 4pt;padding-bottom:1pt}
 .cv-root .cv-col>.cv-h:first-child{margin-top:0}
 .cv-root[data-cols='2'] .cv-h{text-align:center}
-.cv-root .cv-entry{display:flex;gap:10pt;padding:0 0 5pt}
+.cv-root .cv-entry{padding:0 0 5pt}
+.cv-root .cv-row1{display:flex;gap:10pt}
 .cv-root .cv-main{flex:1;min-width:0}
+.cv-root .cv-entry .j,.cv-root ul.cv-b li{text-align:%s}
 .cv-root .cv-right{white-space:nowrap;text-align:right}
 .cv-root[data-cols='2'] .cv-right{font-size:9pt;font-style:italic}
 .cv-root ul.cv-b{margin:1pt 0 0;padding-left:1.15em}
 .cv-root ul.cv-b li{margin:0}
 .cv-root .cv-empty{color:#888;text-align:center;margin-top:1in;font-family:system-ui,sans-serif}
-", PAGE_MARGIN, f$css, a, a, a)
+", PAGE_MARGIN, f$css, a, a, a, if (JUSTIFY_TEXT) "justify" else "left")
 }
 runs_html <- function(runs) paste0(vapply(runs, function(r) {
   t <- esc(r$t); if (isTRUE(r$b)) t <- paste0("<b>", t, "</b>"); if (isTRUE(r$i)) t <- paste0("<i>", t, "</i>"); t
 }, ""), collapse = "")
 entry_html <- function(en) {
-  lines <- paste0("<div>", vapply(en$lines, runs_html, ""), "</div>", collapse = "")
+  # Only the first line shares its row with the dates; everything below runs the full width
+  jl <- en$just %||% rep(FALSE, length(en$lines))
+  ln <- function(k) sprintf("<div%s>%s</div>", if (isTRUE(jl[k])) " class='j'" else "", runs_html(en$lines[[k]]))
+  first <- sprintf("<div class='cv-row1'><div class='cv-main'>%s</div>%s</div>", if (length(en$lines)) ln(1) else "",
+                   if (nzchar(en$right)) sprintf("<div class='cv-right'>%s</div>", esc(en$right)) else "")
+  rest <- if (length(en$lines) > 1) paste(vapply(2:length(en$lines), ln, ""), collapse = "") else ""
   bl <- if (length(en$bullets)) paste0("<ul class='cv-b'>", paste0("<li>", esc(en$bullets), "</li>", collapse = ""), "</ul>") else ""
-  sprintf("<div class='cv-entry'><div class='cv-main'>%s%s</div>%s</div>", lines, bl,
-          if (nzchar(en$right)) sprintf("<div class='cv-right'>%s</div>", esc(en$right)) else "")
+  sprintf("<div class='cv-entry'>%s%s%s</div>", first, rest, bl)
 }
 # The unpaginated "source": a header plus one block per section
 cv_src_html <- function(st) {
@@ -605,30 +633,51 @@ make_docx <- function(st, path, breaks = NULL) {
       text.align = if (ncol == 2) "center" else "left", padding.top = if (before_break) 0 else 10,
       padding.bottom = 2, border.bottom = fp_border(color = acc, width = .75), keep_with_next = TRUE)))))
   }
+  # One table row per line of an entry (dates in the right column of the first row).
+  # Separate rows let paragraph-style lines be justified while titles stay left-aligned,
+  # and give bullets a proper indent. Rows of one entry are kept on the same page.
   entries_table <- function(doc, ents) {
-    n <- length(ents)
+    rows <- list()
+    for (k in seq_along(ents)) {
+      en <- ents[[k]]; jl <- en$just %||% rep(FALSE, length(en$lines))
+      for (li in seq_along(en$lines))
+        rows[[length(rows) + 1]] <- list(g = k, runs = en$lines[[li]], right = if (li == 1) en$right else "",
+                                         just = isTRUE(jl[li]), bullet = FALSE)
+      for (bl in en$bullets)
+        rows[[length(rows) + 1]] <- list(g = k, runs = list(R(bl)), right = "", just = TRUE, bullet = TRUE)
+    }
+    n <- length(rows); g <- vapply(rows, `[[`, 0, "g")
     has_right <- any(vapply(ents, function(en) nzchar(en$right), TRUE))
-    ft <- flextable(data.frame(a = character(n), b = character(n)))
+    ft <- flextable(data.frame(a = character(n), b = character(n), g = g), col_keys = c("a", "b"))
     ft <- delete_part(ft, part = "header")
     for (k in seq_len(n)) {
-      en <- ents[[k]]; ch <- list()
-      for (li in seq_along(en$lines)) {
-        if (li > 1) ch[[length(ch) + 1]] <- as_chunk("\n", props = tp())
-        for (r in en$lines[[li]]) ch[[length(ch) + 1]] <- as_chunk(r$t, props = tp(b = isTRUE(r$b), i = isTRUE(r$i)))
-      }
-      for (bl in en$bullets) ch[[length(ch) + 1]] <- as_chunk(paste0("\n•  ", bl), props = tp())
+      r <- rows[[k]]
+      ch <- lapply(r$runs, function(x) as_chunk(x$t, props = tp(b = isTRUE(x$b), i = isTRUE(x$i))))
+      if (r$bullet) ch <- c(list(as_chunk("\u2022  ", props = tp())), ch)
       ft <- compose(ft, i = k, j = "a", value = as_paragraph(list_values = ch))
-      ft <- compose(ft, i = k, j = "b", value = as_paragraph(as_chunk(en$right,
+      ft <- compose(ft, i = k, j = "b", value = as_paragraph(as_chunk(r$right,
               props = tp(size = if (ncol == 2) 9 else fs, i = ncol == 2))))
     }
+    first <- !duplicated(g); last <- !duplicated(g, fromLast = TRUE)
+    # rows without dates span both columns (full width), like the lines under a title
+    for (k in which(!nzchar(vapply(rows, `[[`, "", "right")))) ft <- merge_at(ft, i = k, j = 1:2, part = "body")
     ft <- border_remove(ft)
     ft <- width(ft, j = 1, width = if (has_right) col_w - right_w else col_w - .05)
     ft <- width(ft, j = 2, width = if (has_right) right_w else .05)
     ft <- align(ft, j = 2, align = "right", part = "body")
+    ft <- align(ft, j = 1, align = "left", part = "body")
+    jrows <- which(vapply(rows, `[[`, TRUE, "just"))
+    if (JUSTIFY_TEXT && length(jrows)) ft <- align(ft, i = jrows, j = 1, align = "justify", part = "body")
     ft <- valign(ft, valign = "top", part = "body")
-    ft <- padding(ft, padding.left = 0, padding.right = 0, padding.top = 1.5, padding.bottom = 4, part = "body")
-    ft <- set_table_properties(ft, layout = "fixed")
-    ft <- set_table_properties(ft, layout = "fixed", opts_word = list(split = FALSE))   # never split an entry across pages
+    ft <- padding(ft, padding.left = 0, padding.right = 0, padding.top = 0, padding.bottom = 0, part = "body")
+    ft <- padding(ft, i = which(first), padding.top = 1.5, part = "body")
+    ft <- padding(ft, i = which(last), padding.bottom = 4, part = "body")
+    brows <- which(vapply(rows, `[[`, TRUE, "bullet"))
+    if (length(brows)) ft <- padding(ft, i = brows, j = 1, padding.left = 8, part = "body")
+    ft <- height_all(ft, height = 0.05, part = "body")   # no minimum row height: rows are as tall as their text
+    ft <- hrule(ft, rule = "atleast", part = "body")
+    ft <- set_table_properties(ft, layout = "fixed", opts_word = list(split = FALSE))
+    ft <- paginate(ft, init = FALSE, hdr_ftr = FALSE, group = "g", group_def = "rle")   # keep each entry on one page
     body_add_flextable(doc, ft, align = "left")
   }
   br <- if (is.null(breaks) || !NROW(breaks)) data.frame(s = integer(), e = integer(), c = integer()) else breaks
@@ -649,6 +698,7 @@ make_docx <- function(st, path, breaks = NULL) {
   print(doc, target = path)
   invisible(path)
 }
+
 
 # ---------------------------------------------------------------------
 # 6. PDF output: Chrome/Edge (headless) -> LibreOffice -> browser print
@@ -921,7 +971,7 @@ sample_fac <- function() {
                  location = "Lakeshore State University, Chicago, IL", email = "mellis@example.edu",
                  phone = "", website = "", orcid = ""),
   stage = "fac",
-  sections = stage_defaults("fac"),
+  sections = setdiff(stage_defaults("fac"), "research"),
   style = list(font = names(FONTS)[1], accent = unname(ACCENTS["Cardinal red"]), cols = "2", cont = TRUE),
   custom = list(list(id = inv, title = "Invited Talks", kind = "dated")), order = character(),
   entries = list(
@@ -930,12 +980,12 @@ sample_fac <- function() {
        details = "Dissertation: Circadian regulation of social behavior in rodents"),
     mk("education", title = "B.S. in Psychology", org = "University of Iowa", location = "Iowa City, IA",
        start_month = "Aug", start_year = yr(-16), end_month = "May", end_year = yr(-12), current = FALSE, details = ""),
-    mk("research", title = "Assistant Professor and Principal Investigator", org = "Social Neuroscience Lab, Department of Psychology",
-       location = "Lakeshore State University", start_month = "Aug", start_year = yr(-2), end_month = "", end_year = "", current = TRUE,
-       details = "Study how sleep and circadian disruption alter social brain networks"),
-    mk("research", title = "Postdoctoral Research Fellow", org = "Department of Neuroscience", location = "University of Minnesota",
+    mk("appointments", title = "Assistant Professor", org = "Lakeshore State University", location = "Department of Psychology",
+       start_month = "Aug", start_year = yr(-2), end_month = "", end_year = "", current = TRUE,
+       description = "My lab studies how sleep loss and circadian disruption change social brain networks, using ex vivo calcium imaging and behavioral testing in two vole species."),
+    mk("appointments", title = "Postdoctoral Research Fellow", org = "University of Minnesota", location = "Department of Neuroscience",
        start_month = "Jun", start_year = yr(-6), end_month = "Jul", end_year = yr(-2), current = FALSE,
-       details = "Developed ex vivo imaging of the suprachiasmatic nucleus"),
+       description = "Developed ex vivo imaging methods for the suprachiasmatic nucleus and studied how light at night alters pair bonding."),
     mk("publications", authors = "Park, J. H., Ellis, M. T., & Okafor, C. N.", status = "In preparation", year = yr(0),
        title = "Sleep loss and social approach in two vole species", journal = "", volume = "", issue = "", pages = "", doi = ""),
     mk("publications", authors = "Ellis, M. T., Rivera, D. A., & Brooks, L. K.", status = "Submitted", year = yr(0),
