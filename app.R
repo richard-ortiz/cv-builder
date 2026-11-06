@@ -111,7 +111,7 @@ SECTIONS <- list(
       fld("title", "Grant or fellowship name", placeholder = "Summer Program in Neuroscience, Excellence and Success (NIH R25)", required = TRUE),
       fld("org", "Funder or program", placeholder = "Marine Biological Laboratory"),
       fld("year", "Year", "year", required = TRUE),
-      fld("status", "Outcome", "select", choices = c("Funded", "Not funded", "Pending")),
+      fld("status", "Outcome", "select", choices = c("Funded", "Awarded", "Not funded", "Pending")),
       fld("amount", "Amount (optional)", placeholder = "$5,000"),
       BULLETS(""))),
   awards = list(
@@ -199,28 +199,60 @@ SECTIONS <- list(
 SEC_CHOICES <- setNames(names(SECTIONS), vapply(SECTIONS, `[[`, "", "title"))
 SORTED_KINDS <- c("dated", "employ", "award", "grant", "pub", "pres", "cert")
 
-# Student-made ("custom") sections. Each one is stored as list(id, title, kind),
-# where kind is "dated" (title, place, dates, bullets) or "list" (one line per item).
+# Student-made ("custom") sections. Each one is stored as list(id, title, kind, ...):
+#   kind "dated"  = title, place, dates, bullets (like Research Experience)
+#   kind "list"   = one line per item, with an optional detail and year
+#   kind "custom" = built with the section builder: `parts` (which extra lines each entry
+#                   has), `date` ("none", "year" or "range"), `bold` (first line bold?) and
+#                   `labels` (what each field is called in the entry form)
+CUSTOM_PARTS <- c(org = "A second line (italic)", location = "A third line", description = "A paragraph",
+                  details = "Bullet points", link = "A link (web address)")
+CUSTOM_LABELS <- c(title = "Title", org = "Organization or place", location = "Location or other detail",
+                   description = "Description", details = "Details", link = "Link")
+custom_spec <- function(cs) {   # builder settings for any custom section (older kinds converted)
+  if (identical(cs$kind, "custom"))
+    return(list(parts = unlist(cs$parts) %||% character(), date = cs$date %||% "none",
+                bold = !identical(cs$bold, FALSE), labels = cs$labels %||% list()))
+  if (identical(cs$kind, "list")) return(list(parts = "org", date = "year", bold = FALSE, labels = list(title = "Item", org = "Detail")))
+  list(parts = c("org", "location", "details"), date = "range", bold = TRUE, labels = list(title = "Title or role"))
+}
 custom_def <- function(cs) {
-  if (identical(cs$kind, "list")) list(
+  if (identical(cs$kind, "list")) return(list(
     title = cs$title, kind = "simple", stages = character(), custom = TRUE,
     tip = "One line per item. Add a detail or a year if it helps; the arrows set the order.",
     fields = list(fld("title", "Item", placeholder = "Spanish (fluent)", required = TRUE),
                   fld("org", "Detail (optional)", placeholder = "Native speaker; medical interpreting certificate"),
-                  fld("year", "Year (optional)", "year")))
-  else list(
+                  fld("year", "Year (optional)", "year"))))
+  if (!identical(cs$kind, "custom")) return(list(
     title = cs$title, kind = "dated", stages = character(), custom = TRUE,
     tip = "Give each entry a title, where it happened, and the dates. Bullets are optional; start each one with an action verb.",
     fields = list(fld("title", "Title or role", placeholder = "Peer Mentor", required = TRUE),
                   fld("org", "Organization or place", placeholder = "NIU Psychology Department"),
                   fld("location", "City or institution (optional)", placeholder = "DeKalb, IL"),
-                  DATES, BULLETS("")))
+                  DATES, BULLETS(""))))
+  sp <- custom_spec(cs)
+  lab <- function(k) { x <- sp$labels[[k]]; if (is.null(x) || !nzchar(x)) CUSTOM_LABELS[[k]] else x }
+  fields <- list(fld("title", lab("title"), required = TRUE))
+  if (sp$date == "range") fields <- c(fields, list(DATES))
+  if (sp$date == "year") fields <- c(fields, list(fld("year", "Year", "year")))
+  for (p in c("org", "location", "description", "link")) if (p %in% sp$parts)
+    fields <- c(fields, list(fld(p, lab(p), if (p == "description") "textarea" else "text")))
+  if ("details" %in% sp$parts) fields <- c(fields, list(fld("details", paste0(lab("details"), ": one bullet per line"), "textarea")))
+  list(title = cs$title, kind = "custom", spec = sp, stages = character(), custom = TRUE, fields = fields,
+       tip = "This is your own section. To change which lines each entry has, click \"Edit this section\" above.")
 }
-all_defs <- function(custom = list()) {
+# All section definitions, with the student's own sections, renamed headings
+# (st$titles) and notes under headings (st$notes) applied
+all_defs <- function(custom = list(), titles = list(), notes = list()) {
   d <- SECTIONS
   for (cs in custom %||% list()) d[[cs$id]] <- custom_def(cs)
+  for (id in names(titles %||% list())) if (!is.null(d[[id]]) && nzchar(titles[[id]] %||% "")) d[[id]]$title <- titles[[id]]
+  for (id in names(notes %||% list())) if (!is.null(d[[id]])) d[[id]]$note <- notes[[id]] %||% ""
   d
 }
+st_defs <- function(st) all_defs(st$custom, st$titles, st$notes)
+# Is this section sorted by date automatically (otherwise the student orders it with arrows)?
+sorted_section <- function(S) S$kind %in% SORTED_KINDS || (identical(S$kind, "custom") && S$spec$date %in% c("range", "year"))
 # Order on the CV: built-in sections, then custom sections, with References last
 # st$order holds the student's own ordering (set with the arrows on the Add tab).
 # Sections not in it yet (newly turned on or newly made) slot in before References.
@@ -394,6 +426,20 @@ render_entry <- function(e, sec, last, defs = SECTIONS) {
       if (nzchar(inst)) out$lines[[length(out$lines) + 1]] <- list(R(inst))
       out$right <- date_label(e, sec)
     },
+    custom = {
+      sp <- defs[[sec]]$spec; has <- function(p) p %in% sp$parts && nzchar(val(e, p))
+      out$lines[[1]] <- list(R(val(e, "title"), b = isTRUE(sp$bold)))
+      if (has("org")) out$lines[[length(out$lines) + 1]] <- list(R(val(e, "org"), i = TRUE))
+      if (has("location")) out$lines[[length(out$lines) + 1]] <- list(R(val(e, "location")))
+      out$just <- rep(FALSE, length(out$lines))
+      if (has("description")) {
+        out$lines[[length(out$lines) + 1]] <- list(R(trimws(gsub("\\s*\n\\s*", " ", val(e, "description")))))
+        out$just <- c(out$just, TRUE)
+      }
+      if (has("link")) out$lines[[length(out$lines) + 1]] <- list(R(val(e, "link")))
+      if ("details" %in% sp$parts) out$bullets <- bullets_of(e)
+      out$right <- switch(sp$date, range = date_label(e, sec), year = val(e, "year"), "")
+    },
     cert = {
       out$lines[[1]] <- list(R(val(e, "title"), b = TRUE))
       l2 <- val(e, "org")
@@ -426,7 +472,8 @@ render_entry <- function(e, sec, last, defs = SECTIONS) {
 sort_entries <- function(ents, sec, defs = SECTIONS) {
   if (length(ents) < 2) return(ents)
   kind <- defs[[sec]]$kind
-  if (!kind %in% SORTED_KINDS) return(ents)
+  if (!sorted_section(defs[[sec]])) return(ents)
+  if (kind == "custom") kind <- if (defs[[sec]]$spec$date == "range") "dated" else "year"
   num <- function(x) ifelse(is.na(x), -1e5, x)
   if (kind %in% c("dated", "employ")) {
     endk <- vapply(ents, function(e) if (is_current(e)) 1e4 else num(date_num(val(e, "end_month"), val(e, "end_year"))), 0)
@@ -451,12 +498,12 @@ sort_entries <- function(ents, sec, defs = SECTIONS) {
 build_cv <- function(st) {
   last <- name_last(st$profile$name)
   secs <- list()
-  defs <- all_defs(st$custom)
+  defs <- st_defs(st)
   for (s in section_order(st)) {
     ents <- Filter(function(e) identical(e$section, s), st$entries)
     if (!length(ents)) next
     ents <- sort_entries(ents, s, defs)
-    secs[[length(secs) + 1]] <- list(title = defs[[s]]$title,
+    secs[[length(secs) + 1]] <- list(title = defs[[s]]$title, note = defs[[s]]$note %||% "",
                                       entries = lapply(ents, render_entry, sec = s, last = last, defs = defs))
   }
   secs
@@ -493,6 +540,8 @@ cv_css <- function(style) {
   letter-spacing:.05em;font-size:11pt;margin:12pt 0 4pt;padding-bottom:1pt}
 .cv-root .cv-col>.cv-h:first-child{margin-top:0}
 .cv-root[data-cols='2'] .cv-h{text-align:center}
+.cv-root .cv-note{font-size:9pt;font-style:italic;color:#444;margin:-1pt 0 4pt;line-height:1.25}
+.cv-root[data-cols='2'] .cv-note{text-align:center}
 .cv-root .cv-entry{padding:0 0 5pt}
 .cv-root .cv-row1{display:flex;gap:10pt}
 .cv-root .cv-main{flex:1;min-width:0}
@@ -526,8 +575,9 @@ cv_src_html <- function(st) {
   ci <- contact_items(p)
   if (length(ci)) h <- c(h, sprintf("<div class='cv-contact'>%s</div>", paste(esc(ci), collapse = " &nbsp;|&nbsp; ")))
   if (!length(secs)) h <- c(h, "<div class='cv-empty'>Your entries will appear here as you add them.</div>")
-  body <- vapply(secs, function(s) sprintf("<div class='cv-sec'><div class='cv-h'>%s</div>%s</div>",
-                                            esc(s$title), paste(vapply(s$entries, entry_html, ""), collapse = "")), "")
+  body <- vapply(secs, function(s) sprintf("<div class='cv-sec'><div class='cv-h'>%s</div>%s%s</div>",
+    esc(s$title), if (nzchar(s$note)) sprintf("<div class='cv-note'>%s</div>", gsub("\n", "<br>", esc(s$note), fixed = TRUE)) else "",
+    paste(vapply(s$entries, entry_html, ""), collapse = "")), "")
   paste0("<div class='cv-header'>", paste(h, collapse = ""), "</div>", paste(body, collapse = "\n"))
 }
 cv_cols <- function(style) if (identical(as.character(style$cols %||% "1"), "2")) 2L else 1L
@@ -557,14 +607,14 @@ function cvPaginate(root){
   newPage(true);
   var secs=src.querySelectorAll('.cv-sec');
   for(var si=0;si<secs.length;si++){
-    var h=secs[si].querySelector('.cv-h'), ents=secs[si].querySelectorAll('.cv-entry');
+    var h=secs[si].querySelector('.cv-h'), nt=secs[si].querySelector('.cv-note'), ents=secs[si].querySelectorAll('.cv-entry');
     if(!ents.length) continue;
     // keep a heading together with its first entry
     for(var tries=0;;tries++){
-      var empty=col.children.length===0, hc=h.cloneNode(true), e0=ents[0].cloneNode(true);
-      col.appendChild(hc); col.appendChild(e0);
+      var empty=col.children.length===0, hc=h.cloneNode(true), nc=nt?nt.cloneNode(true):null, e0=ents[0].cloneNode(true);
+      col.appendChild(hc); if(nc) col.appendChild(nc); col.appendChild(e0);
       if(fits(e0)||empty||tries>0) break;
-      col.removeChild(hc); col.removeChild(e0);
+      col.removeChild(hc); if(nc) col.removeChild(nc); col.removeChild(e0);
       breaks.push({s:si,e:0,k:advance(),c:0});
     }
     for(var j=1;j<ents.length;j++){
@@ -685,6 +735,9 @@ make_docx <- function(st, path, breaks = NULL) {
   for (si in seq_along(secs)) {
     s <- secs[[si]]; b <- br[br$s == si - 1, , drop = FALSE]
     doc <- heading(doc, s$title, before_break = any(b$e == 0))
+    for (nl in strsplit(s$note, "\n", fixed = TRUE)[[1]]) if (nzchar(trimws(nl)))
+      doc <- body_add_fpar(doc, fpar(ftext(trimws(nl), tp(9, i = TRUE, color = "#444444")),
+        fp_p = fp_par(text.align = if (ncol == 2) "center" else "left", padding.bottom = 2, keep_with_next = TRUE)))
     cuts <- sort(unique(b$e[b$e > 0]))
     starts <- c(1, cuts + 1); ends <- c(cuts, length(s$entries))
     for (k in seq_along(starts)) {
@@ -786,7 +839,7 @@ run_checks <- function(st) {
     add("tip", "About you", "On an academic CV, your university (.edu) email usually looks more professional.")
   last <- name_last(p$name)
   dois <- list()
-  defs <- all_defs(st$custom)
+  defs <- st_defs(st)
   for (s in section_order(st)) {
     S <- defs[[s]]
     ents <- Filter(function(e) identical(e$section, s), st$entries)
@@ -832,7 +885,9 @@ run_checks <- function(st) {
     }
     if (has_dates && length(ents) > 1) {
       key <- vapply(ents, function(e) {
-        if (!nzchar(val(e, "start_year"))) return(NA_character_)
+        # only compare full month-to-month ranges; sharing just a year (or a single date) is normal
+        if (!nzchar(val(e, "start_month")) || !nzchar(val(e, "start_year")) ||
+            !(is_current(e) || (nzchar(val(e, "end_month")) && nzchar(val(e, "end_year"))))) return(NA_character_)
         paste(val(e, "start_month"), val(e, "start_year"), val(e, "end_month"), val(e, "end_year"), is_current(e))
       }, "")
       for (k in unique(key[!is.na(key) & duplicated(key)])) {
@@ -841,7 +896,11 @@ run_checks <- function(st) {
                                         paste(vapply(ents[ids], entry_label, ""), collapse = " and ")), ents[[ids[2]]]$id)
       }
     }
-    ttl <- tolower(vapply(ents, function(e) paste(val(e, "title"), val(e, "org"), sep = "|"), "")); ttl[!nzchar(vapply(ents, val, "", "title"))] <- NA
+    # same title + place + dates = a likely duplicate (the same job in different years is fine)
+    ttl <- tolower(vapply(ents, function(e) paste(val(e, "title"), val(e, "org"), date_label(e, s), val(e, "year"),
+                                                  val(e, "description"), val(e, "details"), sep = "|"), ""))
+    ttl[!nzchar(vapply(ents, val, "", "title"))] <- NA
+    if (S$kind == "pub") ttl <- tolower(vapply(ents, val, "", "title"))
     if (S$kind != "skill") for (t in unique(ttl[!is.na(ttl) & duplicated(ttl)]))
       add("warning", S$title, sprintf("\"%s\" appears more than once in this section.", ents[[which(ttl == t)[1]]]$title))
   }
@@ -860,6 +919,9 @@ parse_state <- function(txt) {
   x$sections <- unlist(x$sections) %||% character()
   x$custom <- lapply(x$custom %||% list(), function(cs) lapply(cs, function(v) v %||% ""))
   x$order <- unlist(x$order) %||% character()
+  x$titles <- lapply(x$titles %||% list(), function(v) v %||% "")
+  x$notes <- lapply(x$notes %||% list(), function(v) v %||% "")
+  x$custom <- lapply(x$custom, function(cs) { if (!is.null(cs$parts)) cs$parts <- unlist(cs$parts); cs })
   x$entries <- lapply(x$entries %||% list(), function(e) lapply(e, function(v) v %||% ""))
   x
 }
@@ -1225,7 +1287,7 @@ ui <- page_navbar(
 # 10. Server
 # ---------------------------------------------------------------------
 server <- function(input, output, session) {
-  rv <- reactiveValues(entries = list(), custom = list(), order = character(), cs_edit = NULL, ready = FALSE, skip_stage = FALSE, pdf = NULL,
+  rv <- reactiveValues(entries = list(), custom = list(), order = character(), titles = list(), notes = list(), cs_edit = NULL, ready = FALSE, skip_stage = FALSE, pdf = NULL,
                        edit_sec = NULL, edit_id = NULL, del_id = NULL, restore = NULL)
   cur_sec <- reactiveVal("education")
 
@@ -1237,8 +1299,12 @@ server <- function(input, output, session) {
   st <- reactive(list(profile = profile(), stage = input$stage, sections = input$sections %||% character(),
                       style = list(font = input$font, accent = input$accent, cols = input$cols %||% "1",
                                    cont = CONT_HEADINGS), entries = rv$entries,
-                      custom = rv$custom, order = rv$order))
-  defs <- reactive(all_defs(rv$custom))
+                      custom = rv$custom, order = rv$order, titles = rv$titles, notes = rv$notes))
+  defs <- reactive(all_defs(rv$custom, rv$titles, rv$notes))
+  # Start-tab checkboxes show renamed headings
+  refresh_section_choices <- function(titles, selected) updateCheckboxGroupInput(session, "sections", inline = TRUE,
+    choices = setNames(names(SECTIONS), vapply(names(SECTIONS), function(id) titles[[id]] %||% SECTIONS[[id]]$title, "")),
+    selected = selected)
   checks <- reactive(run_checks(st()))
 
   # ---- apply a loaded / sample / restored state ----
@@ -1255,6 +1321,8 @@ server <- function(input, output, session) {
     rv$entries <- x$entries %||% list()
     rv$custom <- x$custom %||% list()
     rv$order <- x$order %||% character()
+    rv$titles <- x$titles %||% list(); rv$notes <- x$notes %||% list()
+    refresh_section_choices(rv$titles, x$sections %||% character())
     if (length(x$sections)) cur_sec(x$sections[[1]])
   }
   observeEvent(input$stage, {
@@ -1291,7 +1359,7 @@ server <- function(input, output, session) {
     "This clears every entry and your details. Save your progress first if you might want it back.",
     footer = tagList(modalButton("Cancel"), actionButton("clear_yes", "Yes, clear everything", class = "btn-danger")))))
   observeEvent(input$clear_yes, {
-    apply_state(list(profile = list(), stage = "ug", sections = stage_defaults("ug"), style = list(), entries = list(), custom = list(), order = character()))
+    apply_state(list(profile = list(), stage = "ug", sections = stage_defaults("ug"), style = list(), entries = list(), custom = list(), order = character(), titles = list(), notes = list()))
     removeModal()
   })
   observeEvent(input$load_file, {
@@ -1326,7 +1394,7 @@ server <- function(input, output, session) {
     s <- active_sec(); if (is.null(s)) return(NULL)
     D <- defs(); S <- D[[s]]; last <- name_last(profile()$name)
     ents <- sort_entries(Filter(function(e) identical(e$section, s), rv$entries), s, D)
-    movable <- !S$kind %in% SORTED_KINDS
+    movable <- !sorted_section(S)
     cards <- lapply(seq_along(ents), function(k) {
       e <- ents[[k]]; r <- render_entry(e, s, last, D)
       div(class = "entry-card",
@@ -1346,9 +1414,10 @@ server <- function(input, output, session) {
         h4(class = "m-0", S$title),
         actionButton("add_entry", S$add_label %||% (if (isTRUE(S$custom)) "Add entry" else paste("Add", tolower(sub("s$", "", S$title)))),
                      icon = icon("plus"), class = "btn-primary")),
-      if (isTRUE(S$custom)) div(class = "d-flex gap-2 mb-2 small",
-        actionLink("cs_rename", "Rename this section", icon = icon("pen")), span(class = "text-muted", "\u00b7"),
-        actionLink("cs_remove", "Remove this section", icon = icon("trash"), class = "text-danger")),
+      div(class = "d-flex gap-2 mb-2 small",
+        actionLink("sec_edit", if (isTRUE(S$custom)) "Edit this section" else "Rename or add a note", icon = icon("pen")),
+        if (isTRUE(S$custom)) tagList(span(class = "text-muted", "\u00b7"),
+          actionLink("cs_remove", "Remove this section", icon = icon("trash"), class = "text-danger"))),
       div(class = "alert alert-info sec-tip py-2", icon("lightbulb"), " ", S$tip),
       if (length(cards)) cards else p(class = "text-muted fst-italic", "Nothing here yet. Click Add to create your first entry."),
       if (movable && length(ents) > 1) p(class = "small text-muted", "Use the arrows to change the order.")
@@ -1362,36 +1431,76 @@ server <- function(input, output, session) {
   })
   observeEvent(input$order_reset, rv$order <- character())
 
-  # ---- student-made sections ----
-  custom_modal <- function(cs = NULL) {
-    rv$cs_edit <- cs$id
+  # ---- student-made sections, renaming, and notes ----
+  # One dialog for: adding a section, editing your own section (name, note, format),
+  # and renaming a built-in section or giving it a note.
+  section_modal <- function(id = NULL) {
+    rv$cs_edit <- id
     output$cs_err <- renderUI(NULL)
-    showModal(modalDialog(title = if (is.null(cs)) "Add your own section" else "Rename section",
-      p(class = "text-muted", "For anything that doesn't fit the built-in sections, such as Leadership, Languages, Volunteer Work, Media Coverage, Invited Talks, or Inventions. You can add as many as you need."),
-      textInput("cs_title", "Section heading *", value = cs$title %||% "", placeholder = "e.g., Leadership", width = "100%"),
-      if (is.null(cs)) radioButtons("cs_kind", "What kind of entries?", width = "100%", choices = c(
-        "Dated entries: a title, where, dates, and bullets (like Research Experience)" = "dated",
-        "Simple list: one line per item (like Languages)" = "list")),
+    builtin <- !is.null(id) && id %in% names(SECTIONS)
+    cs <- if (!is.null(id) && !builtin) Find(function(x) identical(x$id, id), rv$custom)
+    sp <- if (!is.null(cs)) custom_spec(cs) else list(parts = c("org", "location", "details"), date = "range", bold = TRUE, labels = list())
+    lab <- function(k) { x <- sp$labels[[k]]; if (is.null(x) || !nzchar(x)) CUSTOM_LABELS[[k]] else x }
+    cur_title <- if (builtin) rv$titles[[id]] %||% "" else cs$title %||% ""
+    builder <- conditionalPanel("input.cs_kind == 'custom'", div(class = "border rounded p-3 bg-light",
+      tags$b("Build your own format"),
+      p(class = "small text-muted mb-2", "Pick the lines each entry should have. The labels are what you'll see in the entry form."),
+      layout_columns(col_widths = c(5, 7),
+        div(class = "pt-2", "First line (always included)"),
+        textInput("cs_l_title", NULL, value = lab("title"), width = "100%")),
+      checkboxInput("cs_bold", "Make the first line bold", value = isTRUE(sp$bold)),
+      radioButtons("cs_date", "Dates on the right", inline = TRUE, selected = sp$date,
+                   choices = c("None" = "none", "A single year" = "year", "A date range (start – end or Present)" = "range")),
+      lapply(names(CUSTOM_PARTS), function(p) layout_columns(col_widths = c(5, 7),
+        checkboxInput(paste0("cs_p_", p), CUSTOM_PARTS[[p]], value = p %in% sp$parts),
+        textInput(paste0("cs_l_", p), NULL, value = lab(p), width = "100%")))))
+    showModal(modalDialog(size = "l",
+      title = if (is.null(id)) "Add your own section" else if (builtin) "Rename section" else "Edit section",
+      if (is.null(id)) p(class = "text-muted", "For anything that doesn't fit the built-in sections, such as Leadership, Languages, Volunteer Work, Media Coverage, Invited Talks, Inventions, or Committees. You can add as many as you need."),
+      textInput("cs_title", if (builtin) "Section heading" else "Section heading *", value = cur_title, width = "100%",
+                placeholder = if (builtin) SECTIONS[[id]]$title else "e.g., Leadership"),
+      if (builtin) div(class = "form-text mt-n2 mb-2", sprintf("Leave blank to use the original heading, \"%s\".", SECTIONS[[id]]$title)),
+      textAreaInput("cs_note", "Note under the heading (optional)", value = if (is.null(id)) "" else rv$notes[[id]] %||% "",
+                    rows = 2, width = "100%", resize = "vertical",
+                    placeholder = "e.g., ^ Indicates an undergraduate co-author   or   (Students I have helped train)"),
+      if (!builtin) radioButtons("cs_kind", "What kind of entries?", width = "100%",
+        selected = if (is.null(cs)) "dated" else if (cs$kind %in% c("list", "custom")) cs$kind else "dated",
+        choices = c("Dated entries: a title, where, dates, and bullets (like Research Experience)" = "dated",
+                    "Simple list: one line per item (like Languages)" = "list",
+                    "Build your own: choose exactly which lines each entry has" = "custom")),
+      if (!builtin) builder,
       uiOutput("cs_err"),
-      footer = tagList(modalButton("Cancel"), actionButton("cs_save", if (is.null(cs)) "Add section" else "Save", class = "btn-primary"))))
+      footer = tagList(modalButton("Cancel"), actionButton("cs_save", if (is.null(id)) "Add section" else "Save", class = "btn-primary"))))
   }
-  observeEvent(input$add_custom, custom_modal())
-  observeEvent(input$cs_rename, {
-    cs <- Find(function(x) identical(x$id, active_sec()), rv$custom); if (!is.null(cs)) custom_modal(cs)
-  })
+  observeEvent(input$add_custom, section_modal())
+  observeEvent(input$sec_edit, section_modal(active_sec()))
   observeEvent(input$cs_save, {
-    t <- trimws(input$cs_title %||% "")
-    others <- Filter(function(id) !identical(id, rv$cs_edit), names(defs()))
+    id <- rv$cs_edit; builtin <- !is.null(id) && id %in% names(SECTIONS)
+    t <- trimws(input$cs_title %||% ""); note <- trimws(input$cs_note %||% "")
+    others <- Filter(function(x) !identical(x, id), names(defs()))
     taken <- tolower(vapply(defs()[others], `[[`, "", "title"))
-    err <- if (!nzchar(t)) "Give the section a heading." else if (tolower(t) %in% taken) sprintf("There is already a section called \"%s\".", t)
+    err <- if (!builtin && !nzchar(t)) "Give the section a heading."
+           else if (nzchar(t) && tolower(t) %in% taken) sprintf("There is already a section called \"%s\".", t)
+    kind <- input$cs_kind %||% "dated"
+    parts <- names(CUSTOM_PARTS)[vapply(names(CUSTOM_PARTS), function(p) isTRUE(input[[paste0("cs_p_", p)]]), TRUE)]
     if (!is.null(err)) { output$cs_err <- renderUI(div(class = "alert alert-danger py-2", err)); return() }
-    if (is.null(rv$cs_edit)) {
-      id <- paste0("cus_", substr(new_id(), 2, 9))
-      rv$custom[[length(rv$custom) + 1]] <- list(id = id, title = t, kind = input$cs_kind %||% "dated")
-      cur_sec(id)
+    if (builtin) {
+      ti <- rv$titles; ti[[id]] <- if (nzchar(t) && t != SECTIONS[[id]]$title) t else NULL; rv$titles <- ti
+      refresh_section_choices(ti, input$sections)
     } else {
-      i <- match(rv$cs_edit, vapply(rv$custom, `[[`, "", "id")); rv$custom[[i]]$title <- t
+      spec <- if (kind == "custom") list(parts = parts, date = input$cs_date %||% "none", bold = isTRUE(input$cs_bold),
+        labels = setNames(lapply(c("title", names(CUSTOM_PARTS)), function(k) trimws(input[[paste0("cs_l_", k)]] %||% "")),
+                          c("title", names(CUSTOM_PARTS))))
+      if (is.null(id)) {
+        id <- paste0("cus_", substr(new_id(), 2, 9))
+        rv$custom[[length(rv$custom) + 1]] <- c(list(id = id, title = t, kind = kind), spec)
+        cur_sec(id)
+      } else {
+        i <- match(id, vapply(rv$custom, `[[`, "", "id"))
+        rv$custom[[i]] <- c(list(id = id, title = t, kind = kind), spec)
+      }
     }
+    no <- rv$notes; no[[id]] <- if (nzchar(note)) note else NULL; rv$notes <- no
     removeModal()
   })
   observeEvent(input$cs_remove, {
@@ -1404,6 +1513,7 @@ server <- function(input, output, session) {
     s <- active_sec()
     rv$custom <- Filter(function(cs) !identical(cs$id, s), rv$custom)
     rv$entries <- Filter(function(e) !identical(e$section, s), rv$entries)
+    no <- rv$notes; no[[s]] <- NULL; rv$notes <- no
     removeModal()
   })
 
